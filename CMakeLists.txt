@@ -38,6 +38,9 @@ else()
     endif()
 endif()
 
+# Parlay
+find_package(Parlay REQUIRED)
+
 # Put the binary files in the same folder as dll files
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 

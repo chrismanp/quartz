@@ -2,6 +2,11 @@
 
 #include "substitution.h"
 
+// Testing Parlay
+#include <parlay/parallel.h>
+#include <parlay/primitives.h>
+#include <parlay/sequence.h>
+
 #include <cassert>
 #include <iomanip>
 
@@ -2008,6 +2013,16 @@ Graph::optimize(const std::vector<GraphXfer *> &xfers, double cost_upper_bound,
   if (cost_function == nullptr) {
     cost_function = [](Graph *graph) { return graph->total_cost(); };
   }
+  // Testing parlay parallel_for
+  std::cout << "Start Test parlay\n";
+  auto startT = std::chrono::steady_clock::now();
+  parlay::sequence<int> a(100000000, true);
+  parlay::parallel_for(0, 100000000, [&] (size_t i) {
+      a[i] = 100;
+    }, 1);
+  auto endT = std::chrono::steady_clock::now();
+  std::cout << "End Test parlay : " << (double)std::chrono::duration_cast<std::chrono::milliseconds>(endT - startT).count() / 1000.0 << " s \n";
+
   auto start = std::chrono::steady_clock::now();
   std::priority_queue<std::shared_ptr<Graph>,
                       std::vector<std::shared_ptr<Graph>>, GraphCompare>
