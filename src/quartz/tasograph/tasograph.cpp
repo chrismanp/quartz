@@ -1608,9 +1608,6 @@ Graph::greedy_optimize(Context *ctx, const std::string &equiv_file_name,
     cost_function = [](Graph *graph) { return graph->total_cost(); };
   }
 
-  std::cout << "Run parlay test\n";
-
-
   EquivalenceSet eqs;
   // Load equivalent dags from file
   if (!eqs.load_json(ctx, equiv_file_name)) {
@@ -1955,9 +1952,6 @@ Graph::optimize(Context *ctx, const std::string &equiv_file_name,
     cost_function = [](Graph *graph) { return graph->total_cost(); };
   }
 
-
-  std::cout << "Optimize top level\n";
-
   EquivalenceSet eqs;
   // Load equivalent dags from file
   if (!eqs.load_json(ctx, equiv_file_name)) {
@@ -2020,7 +2014,6 @@ Graph::optimize(Context *ctx, const std::string &equiv_file_name,
 
   preprocessed_graph->create_xfers(equiv_file_name, 2, contextArray, xferArray);
 
-  std::cout << "Run sequential par_optimize\n";
   return preprocessed_graph->par_optimize(xferArray, contextArray, cost_upper_bound, circuit_name, "",
                                       print_message, cost_function, timeout);
 #endif
@@ -2117,40 +2110,44 @@ Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xferArray,
     cost_function = [](Graph *graph) { return graph->total_cost(); };
   }
 
-  //std::cout << "Are you running?\n";
-  std::cout << "Test 1\n";
+
+  size_t nthreads = contextArray.size();
 
   auto start = std::chrono::steady_clock::now();
   std::priority_queue<std::shared_ptr<Graph>,
                       std::vector<std::shared_ptr<Graph>>, GraphCompare>
       candidates((GraphCompare(cost_function)));
 
+#if 1
   std::priority_queue<std::shared_ptr<Graph>,
                       std::vector<std::shared_ptr<Graph>>, GraphCompare>
-    th_candidates[2];// = {((GraphCompare(cost_function))), ((GraphCompare(cost_function)))};
+    th_candidates[nthreads];// = {((GraphCompare(cost_function))), ((GraphCompare(cost_function)))};
+#else
+  std::vector<std::priority_queue<std::shared_ptr<Graph>,
+				  std::vector<std::shared_ptr<Graph>>, GraphCompare>> th_candidates;// = {((GraphCompare(cost_function))), ((GraphCompare(cost_function)))};
 
+#endif
   //th_candidates[0]
 
-  std::cout << "Test 2\n";
-
-  // TODO: Copy the xfers for each thread
-
   std::set<size_t> hashmap;
-  std::set<size_t> th_hashmap[2];
+  std::set<size_t> th_hashmap[nthreads];
   std::shared_ptr<Graph> best_graph(new Graph(*this));
-  std::shared_ptr<Graph> th_best_graph[] = {best_graph, best_graph};
+  std::shared_ptr<Graph> th_best_graph[nthreads];// = {best_graph, best_graph};
   //th_best_graph[0] = new Graph(*this);
   //th_best_graph[1] = new Graph(*this);
 
   auto best_cost = cost_function(this);
-  float th_best_cost[] = {best_cost, best_cost};
+  float th_best_cost[nthreads];// = {best_cost, best_cost};
 
   candidates.push(best_graph);
   hashmap.insert(hash());
-  th_hashmap[0].insert(hash());
-  th_hashmap[1].insert(hash());
 
-  std::cout << "Test 3\n";
+  for(size_t i=0; i<nthreads; i++) {
+    th_hashmap[i].insert(hash());
+    th_best_cost[i] = best_cost;
+    th_best_graph[i] = best_graph;
+    //th_candidates.
+  }
 
   int invoke_cnt = 0;
 
@@ -2167,7 +2164,6 @@ Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xferArray,
   constexpr int kMaxNumCandidates = 2000;
   constexpr int kShrinkToNumCandidates = 1000;
 
-  std::cout << "Test 4\n";
   //------------------------------------------------------------------------
 
   auto shrink_candidates = [&]() {
@@ -2212,11 +2208,8 @@ Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xferArray,
   auto seq_optimize = [&](std::shared_ptr<Graph> graph) {
     std::vector<Op> all_nodes;
 
-    std::cout << "Execute seq optimize: " << parlay::worker_id() << "\n";
+    std::cout << "Executing seq_optimize " << parlay::worker_id() << "\n";
 
-    /* TODO: Copy the context of xfers to the graph / cicruit here
-       graph.ctx = copy(xfers[std::worker_id].ctx
-     */
     graph->topology_order_ops(all_nodes);
     for (auto xfer : xferArray[parlay::worker_id()]) {
       for (auto const &node : all_nodes) {
@@ -2295,21 +2288,25 @@ Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xferArray,
   while(!candidates.empty()) {
 
     // Sequentilly insert priority queue into Frontier
-    auto graph1 = candidates.top();
-    candidates.pop();
+    //auto graph1 = candidates.top();
+    //candidates.pop();
 
-    int nthreads = 2;
-    if(!candidates.empty()){
-      parlay::sequence<std::shared_ptr<Graph>> Frontier(2, nullptr);
+    //int nthreads = 2;
+    //if(!candidates.empty()){
+    parlay::sequence<std::shared_ptr<Graph>> Frontier(candidates.size(), nullptr);
 
-      auto graph2 = candidates.top();
+    int iter = 0;
+    while(!candidates.empty()) {
+      auto graph1 = candidates.top();
       candidates.pop();
+      Frontier[iter] = graph1;
+      iter++;
+    }
 
-      std::cout << "Test 5\n";
-
-      Frontier[0] = graph1;
-      Frontier[1] = graph2;
-
+      //auto graph2 = candidates.top();
+      //candidates.pop();
+      //Frontier[0] = graph1;
+      //Frontier[1] = graph2;
 #if 1
       std::cout << "Parlay numworkers: " << parlay::num_workers() << "\n";
       parlay::parallel_for (0, Frontier.size(), [&] (size_t i) {
@@ -2320,15 +2317,10 @@ Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xferArray,
       seq_optimize(Frontier[1]);
 #endif
 
-      std::cout << "Test 6\n";
-
-    } else {
-      std::cout << "Test 7\n";
-      nthreads = 1;
-      seq_optimize(graph1);
-
-      std::cout << "Test 8\n";
-    }
+      //} else {
+      //nthreads = 1;
+      //seq_optimize(graph1);
+      //}
 
     auto end = std::chrono::steady_clock::now();
     if ((int)std::chrono::duration_cast<std::chrono::milliseconds>(end -
@@ -2340,9 +2332,7 @@ Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xferArray,
       return th_best_graph[0];
     }
 
-    std::cout << "Test 9\n";
-
-    for(int i=0; i<nthreads; i++) {
+    for(size_t i=0; i<nthreads; i++) {
       // Sequentially insert priority quue into seq priority queue
       while(!th_candidates[i].empty()) {
 	auto new_graph = th_candidates[i].top();
@@ -2353,8 +2343,6 @@ Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xferArray,
 	}
       }
     }
-
-    std::cout << "Test 11\n";
 
     end = std::chrono::steady_clock::now();
     if (print_message) {
@@ -2381,7 +2369,7 @@ Graph::optimize(const std::vector<GraphXfer *> &xfers, double cost_upper_bound,
     cost_function = [](Graph *graph) { return graph->total_cost(); };
   }
 
-#if 1
+#if 0
   auto startT = std::chrono::steady_clock::now();
   std::cout << "Start Test parlay 2\n";
 

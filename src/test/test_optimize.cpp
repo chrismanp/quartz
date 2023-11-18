@@ -1,3 +1,9 @@
+#include <parlay/alloc.h>
+#include <parlay/parallel.h>
+#include <parlay/primitives.h>
+#include <parlay/sequence.h>
+
+
 #include "quartz/tasograph/substitution.h"
 #include "quartz/tasograph/tasograph.h"
 #include "test/gen_ecc_set.h"
@@ -47,7 +53,7 @@ int main() {
   std::vector<Context*> contextArray;
   std::vector<std::vector<GraphXfer *>> xferArray;
 
-  graph->create_xfers("Nam_3_3_complete_ECC_set.json", 2, contextArray, xferArray);
+  graph->create_xfers("Nam_3_3_complete_ECC_set.json", parlay::num_workers(), contextArray, xferArray);
 
   std::cout << "number of xfers: " << xfers.size() << std::endl;
 
