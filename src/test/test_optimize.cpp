@@ -40,8 +40,18 @@ int main() {
       }
     }
   }
+
+#if 0
+  graph->optimize(xfers, graph->gate_count() * 1.05, "barenco_tof_3", "", true);
+#else
+  std::vector<Context*> contextArray;
+  std::vector<std::vector<GraphXfer *>> xferArray;
+
+  graph->create_xfers("Nam_3_3_complete_ECC_set.json", 2, contextArray, xferArray);
+
   std::cout << "number of xfers: " << xfers.size() << std::endl;
 
-  graph->optimize(xfers, graph->gate_count() * 1.05, "barenco_tof_3", "", true);
+  graph->par_optimize(xferArray, contextArray, graph->gate_count() * 1.05, "barenco_tof_3", "", true);
+#endif
   return 0;
 }

@@ -253,6 +253,22 @@ class Graph {
    * @param timeout Timeout in seconds.
    * @return The optimized circuit.
    */
+
+  void create_xfers(const std::string& eqset_fn,
+		    int P,
+		    std::vector<Context*>& contextArray,
+		    std::vector<std::vector<GraphXfer *>>& xferArray);
+
+  std::shared_ptr<Graph>
+  par_optimize(std::vector<std::vector<GraphXfer *>> &xferArray,
+	      std::vector<Context*>& contextArray,
+	      double cost_upper_bound,
+	      const std::string &circuit_name,
+	      const std::string &log_file_name,
+	      bool print_message,
+	      std::function<float(Graph *)> cost_function = nullptr,
+	      int timeout = 3600 /*1 hour*/);
+
   std::shared_ptr<Graph>
   optimize(const std::vector<GraphXfer *> &xfers, double cost_upper_bound,
            const std::string &circuit_name, const std::string &log_file_name,
