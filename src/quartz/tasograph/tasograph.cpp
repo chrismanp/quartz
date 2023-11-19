@@ -6,7 +6,7 @@
 #include <parlay/parallel.h>
 #include <parlay/primitives.h>
 #include <parlay/sequence.h>
-
+#include <parlay/hash_table.h>
 
 #include <cassert>
 #include <iomanip>
@@ -21,6 +21,29 @@ enum {
   GUID_WEIGHT = 11,
   GUID_PRESERVED = 16383
 };
+
+#if 0
+  // TODO
+struct graph_hashtable {
+  using eType = int;
+  using kType = Graph;
+  eType empty() { return -1; }
+  kType getKey(eType v) { return v; }
+  size_t hash(kType v) { return static_cast<size_t>(v.hash()); }
+  int cmp(kType v, kType b) { size_t v_hash = v.hash(); size_t b_hash = b.hash();  return (v_hash > b_hash) ? 1 : ((v_hash == b_hash) ? 0 : -1); }
+  bool replaceQ(eType, eType) { return 0; }
+  eType update(eType v, eType) { return v; }
+  bool cas(eType* p, eType o, eType n) {
+    // TODO: Make this use atomics properly. This is a quick
+    // fix to get around the fact that the hashtable does
+    // not use atomics. This will break for types that
+    // do not inline perfectly inside a std::atomic (i.e.,
+    // any type that the standard library chooses to lock)
+    return std::atomic_compare_exchange_strong_explicit(
+      reinterpret_cast<std::atomic<eType>*>(p), &o, n, std::memory_order_relaxed, std::memory_order_relaxed);
+  }
+};
+#endif
 
 bool equal_to_2k_pi(double d) {
   d = std::abs(d);
@@ -2130,11 +2153,14 @@ Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xferArray,
   //th_candidates[0]
 
   std::set<size_t> hashmap;
-  std::set<size_t> th_hashmap[nthreads];
+  //std::set<size_t> th_hashmap[nthreads];
   std::shared_ptr<Graph> best_graph(new Graph(*this));
-  std::shared_ptr<Graph> th_best_graph[nthreads];// = {best_graph, best_graph};
+  //std::shared_ptr<Graph> th_best_graph[nthreads];// = {best_graph, best_graph};
   //th_best_graph[0] = new Graph(*this);
   //th_best_graph[1] = new Graph(*this);
+  //parlay::hashtable<quartz::graph_hashtable> conc_hashmap(100000, quartz::graph_hashtable{});
+  parlay::hashtable<parlay::hash_numeric<int>> conc_hashmap(100000, parlay::hash_numeric<int>{});
+  std::shared_ptr<Graph> th_best_graph[nthreads];// = {best_graph, best_graph};
 
   auto best_cost = cost_function(this);
   float th_best_cost[nthreads];// = {best_cost, best_cost};
@@ -2143,7 +2169,7 @@ Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xferArray,
   hashmap.insert(hash());
 
   for(size_t i=0; i<nthreads; i++) {
-    th_hashmap[i].insert(hash());
+    //th_hashmap[i].insert(hash());
     th_best_cost[i] = best_cost;
     th_best_graph[i] = best_graph;
     //th_candidates.
@@ -2208,7 +2234,7 @@ Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xferArray,
   auto seq_optimize = [&](std::shared_ptr<Graph> graph) {
     std::vector<Op> all_nodes;
 
-    std::cout << "Executing seq_optimize " << parlay::worker_id() << "\n";
+    //std::cout << "Executing seq_optimize " << parlay::worker_id() << "\n";
 
     graph->topology_order_ops(all_nodes);
     for (auto xfer : xferArray[parlay::worker_id()]) {
@@ -2229,7 +2255,7 @@ Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xferArray,
 	/* TODO: In parlay hash table,
 	   a find and insert can not be done in parallel */
 
-#if 1
+#if 0
 	if (th_hashmap[parlay::worker_id()].find(new_hash) == th_hashmap[parlay::worker_id()].end()) {
 	  th_hashmap[parlay::worker_id()].insert(new_hash);
 	  th_candidates[parlay::worker_id()].push(new_graph);
@@ -2245,16 +2271,17 @@ Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xferArray,
 	}
 #else
 
-	if (th_hashmap[0].find(new_hash) == th_hashmap[0].end()) {
-	  th_hashmap[0].insert(new_hash);
-	  th_candidates[0].push(new_graph);
+	if (conc_hashmap.insert(new_hash)) {
+	  // succeed
+	  //th_hashmap[0].insert(new_hash);
+	  th_candidates[parlay::worker_id()].push(new_graph);
 	  //if (th_candidates[0].size() > kMaxNumCandidates) {
 	    //  shrink_candidates();
 	  //}
 
-	  if (new_cost < th_best_cost[0]) {
-	    th_best_cost[0] = new_cost;
-	    th_best_graph[0] = new_graph;
+	  if (new_cost < th_best_cost[parlay::worker_id()]) {
+	    th_best_cost[parlay::worker_id()] = new_cost;
+	    th_best_graph[parlay::worker_id()] = new_graph;
 	  }
 	} else {
 	  continue;
@@ -2295,11 +2322,13 @@ Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xferArray,
     //if(!candidates.empty()){
     parlay::sequence<std::shared_ptr<Graph>> Frontier(candidates.size(), nullptr);
 
+    // Expensive?
     int iter = 0;
     while(!candidates.empty()) {
       auto graph1 = candidates.top();
       candidates.pop();
-      Frontier[iter] = graph1;
+      //if(iter < 1000)
+	Frontier[iter] = graph1;
       iter++;
     }
 
@@ -2308,10 +2337,10 @@ Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xferArray,
       //Frontier[0] = graph1;
       //Frontier[1] = graph2;
 #if 1
-      std::cout << "Parlay numworkers: " << parlay::num_workers() << "\n";
+    //std::cout << "Parlay numworkers: " << parlay::num_workers() << "\n";
       parlay::parallel_for (0, Frontier.size(), [&] (size_t i) {
 	  seq_optimize(Frontier[i]);
-	}, 1);
+	});
 #else
       seq_optimize(Frontier[0]);
       seq_optimize(Frontier[1]);
