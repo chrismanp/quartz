@@ -2042,7 +2042,6 @@ Graph::optimize(Context *ctx, const std::string &equiv_file_name,
 #endif
 
 }
-// I HAVE NOT COMPILED ANY OF THIS HAHA
 
 // xferArray is an vector of vector
 // The function copies the array of GraphXfer and Context to each Processor
@@ -2088,8 +2087,6 @@ void Graph::create_xfers(const std::string& eqset_fn,
 		<< "\"." << std::endl;
       assert(false);
     }
-
-
 
     std::vector<std::vector<CircuitSeq *>> eccs = eqs->get_all_equivalence_sets();
 
@@ -2150,32 +2147,13 @@ Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xferArray,
 				  std::vector<std::shared_ptr<Graph>>, GraphCompare>> th_candidates;// = {((GraphCompare(cost_function))), ((GraphCompare(cost_function)))};
 
 #endif
-  //th_candidates[0]
 
-  std::set<size_t> hashmap;
-  //std::set<size_t> th_hashmap[nthreads];
   std::shared_ptr<Graph> best_graph(new Graph(*this));
-  //std::shared_ptr<Graph> th_best_graph[nthreads];// = {best_graph, best_graph};
-  //th_best_graph[0] = new Graph(*this);
-  //th_best_graph[1] = new Graph(*this);
   //parlay::hashtable<quartz::graph_hashtable> conc_hashmap(100000, quartz::graph_hashtable{});
-  parlay::hashtable<parlay::hash_numeric<int>> conc_hashmap(100000, parlay::hash_numeric<int>{});
-  std::shared_ptr<Graph> th_best_graph[nthreads];// = {best_graph, best_graph};
-
   auto best_cost = cost_function(this);
-  float th_best_cost[nthreads];// = {best_cost, best_cost};
-
   candidates.push(best_graph);
-  hashmap.insert(hash());
 
-  for(size_t i=0; i<nthreads; i++) {
-    //th_hashmap[i].insert(hash());
-    th_best_cost[i] = best_cost;
-    th_best_graph[i] = best_graph;
-    //th_candidates.
-  }
-
-  int invoke_cnt = 0;
+  parlay::hashtable<parlay::hash_numeric<int>> conc_hashmap(100000, parlay::hash_numeric<int>{});
 
   FILE *fout = nullptr;
   if (print_message) {
@@ -2193,6 +2171,8 @@ Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xferArray,
   //------------------------------------------------------------------------
 
   auto shrink_candidates = [&]() {
+
+    // TODO: TURN HASHMAP INTO SET AND CREATE A NEW ONE?
     if (print_message) {
       fprintf(fout, "%s: shrink the priority queue with %d candidates.\n",
               circuit_name.c_str(), (int)candidates.size());
@@ -2230,126 +2210,63 @@ Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xferArray,
 
   //------------------------------------------------------------------------
 
-  //Graph::seq_optimize(std::shared_ptr<Graph> graph), const std::vector<GraphXfer *> &xfers, double cost_upper_bound, std::function<float(Graph *)> cost_function, int timeout) {
   auto seq_optimize = [&](std::shared_ptr<Graph> graph) {
     std::vector<Op> all_nodes;
 
-    //std::cout << "Executing seq_optimize " << parlay::worker_id() << "\n";
+    auto best_graph_local = best_graph;
+    auto best_cost_local = best_cost;
+    auto wid = parlay::worker_id();
+
 
     graph->topology_order_ops(all_nodes);
-    for (auto xfer : xferArray[parlay::worker_id()]) {
+    for (auto xfer : xferArray[wid]) {
       for (auto const &node : all_nodes) {
-	invoke_cnt++;
-	auto new_graph =
-	  graph->apply_xfer(xfer, node, contextArray[parlay::worker_id()]->has_parameterized_gate());
+        auto new_graph =
+          graph->apply_xfer(xfer, node, contextArray[wid]->has_parameterized_gate());
 
-	if (new_graph == nullptr)
-	  continue;
+        if (new_graph == nullptr)
+          continue;
 
-	auto new_hash = new_graph->hash();
-	auto new_cost = cost_function(new_graph.get());
-	if (new_cost > cost_upper_bound)
-	  continue;
+        auto new_hash = new_graph->hash();
+        auto new_cost = cost_function(new_graph.get());
+        if (new_cost > cost_upper_bound)
+          continue;
 
+        if (conc_hashmap.insert(new_hash)) {
+          // succeed
+          th_candidates[wid].push(new_graph);
 
-	/* TODO: In parlay hash table,
-	   a find and insert can not be done in parallel */
-
-#if 0
-	if (th_hashmap[parlay::worker_id()].find(new_hash) == th_hashmap[parlay::worker_id()].end()) {
-	  th_hashmap[parlay::worker_id()].insert(new_hash);
-	  th_candidates[parlay::worker_id()].push(new_graph);
-	  //if (th_candidates[parlay::worker_id()].size() > kMaxNumCandidates) {
-	    //  shrink_candidates();
-	  //}
-	  if (new_cost < th_best_cost[parlay::worker_id()]) {
-	    th_best_cost[parlay::worker_id()] = new_cost;
-	    th_best_graph[parlay::worker_id()] = new_graph;
-	  }
-	} else {
-	  continue;
-	}
-#else
-
-	if (conc_hashmap.insert(new_hash)) {
-	  // succeed
-	  //th_hashmap[0].insert(new_hash);
-	  th_candidates[parlay::worker_id()].push(new_graph);
-	  //if (th_candidates[0].size() > kMaxNumCandidates) {
-	    //  shrink_candidates();
-	  //}
-
-	  if (new_cost < th_best_cost[parlay::worker_id()]) {
-	    th_best_cost[parlay::worker_id()] = new_cost;
-	    th_best_graph[parlay::worker_id()] = new_graph;
-	  }
-	} else {
-	  continue;
-	}
-#endif
+          if (new_cost < best_cost_local) {
+            best_cost_local = new_cost;
+            best_graph_local = new_graph;
+          }
+        } else {
+          continue;
+        }
 
       }
     }
   };
 
-  /*
-
-    Readonly : G1 -> G2, context, matchingfilter
-
-    apply_transformation():
-      change ctx: information about the gates, matchingfilter
-
-      xfeer:
-      Duplicatng circuit: Constant time
-      G1'->G2' : context
-      G1->G2: context
-
-      Read the file only.
-
-      memcpy fast.
-
-
-   */
-
   //------------------------------------------------------------------------
   while(!candidates.empty()) {
 
-    // Sequentilly insert priority queue into Frontier
-    //auto graph1 = candidates.top();
-    //candidates.pop();
-
-    //int nthreads = 2;
-    //if(!candidates.empty()){
     parlay::sequence<std::shared_ptr<Graph>> Frontier(candidates.size(), nullptr);
-
+    std::cout << "num candidates = " << candidates.size() << std::endl;
     // Expensive?
     int iter = 0;
     while(!candidates.empty()) {
       auto graph1 = candidates.top();
       candidates.pop();
       //if(iter < 1000)
-	Frontier[iter] = graph1;
+      Frontier[iter] = graph1;
       iter++;
     }
 
-      //auto graph2 = candidates.top();
-      //candidates.pop();
-      //Frontier[0] = graph1;
-      //Frontier[1] = graph2;
-#if 1
-    //std::cout << "Parlay numworkers: " << parlay::num_workers() << "\n";
-      parlay::parallel_for (0, Frontier.size(), [&] (size_t i) {
-	  seq_optimize(Frontier[i]);
-	});
-#else
-      seq_optimize(Frontier[0]);
-      seq_optimize(Frontier[1]);
-#endif
+    parlay::parallel_for (0, Frontier.size(), [&] (size_t i) {
+	    seq_optimize(Frontier[i]);
+    });
 
-      //} else {
-      //nthreads = 1;
-      //seq_optimize(graph1);
-      //}
 
     auto end = std::chrono::steady_clock::now();
     if ((int)std::chrono::duration_cast<std::chrono::milliseconds>(end -
@@ -2357,21 +2274,23 @@ Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xferArray,
 	.count() /
 	1000.0 >
 	timeout) {
-      std::cout << "Timeout. Program terminated. Best cost is " << th_best_cost[0] << std::endl;
-      return th_best_graph[0];
+      std::cout << "Timeout. Program terminated. Best cost is " << best_cost << std::endl;
+      return best_graph;
     }
 
     for(size_t i=0; i<nthreads; i++) {
       // Sequentially insert priority quue into seq priority queue
       while(!th_candidates[i].empty()) {
-	auto new_graph = th_candidates[i].top();
-	th_candidates[i].pop();
-	candidates.push(new_graph);
-	if (candidates.size() > kMaxNumCandidates) {
-	  shrink_candidates();
-	}
+        auto new_graph = th_candidates[i].top();
+        th_candidates[i].pop();
+        candidates.push(new_graph);
+        if (candidates.size() > kMaxNumCandidates) {
+          shrink_candidates();
+        }
       }
     }
+    best_graph = candidates.top();
+    best_cost = cost_function(candidates.top().get());
 
     end = std::chrono::steady_clock::now();
     if (print_message) {
@@ -2386,7 +2305,7 @@ Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xferArray,
     }
   }
 
-  return th_best_graph[0];
+  return best_graph;
 }
 
 std::shared_ptr<Graph>
@@ -2398,19 +2317,6 @@ Graph::optimize(const std::vector<GraphXfer *> &xfers, double cost_upper_bound,
     cost_function = [](Graph *graph) { return graph->total_cost(); };
   }
 
-#if 0
-  auto startT = std::chrono::steady_clock::now();
-  std::cout << "Start Test parlay 2\n";
-
-  parlay::sequence<int> a(100000000, true);
-  parlay::parallel_for(0, 100000000, [&] (size_t i) {
-      a[i] = 100;
-    }, 1);
-
-  auto endT = std::chrono::steady_clock::now();
-  std::cout << "End Test parlay 2: " << (double)std::chrono::duration_cast<std::chrono::milliseconds>(endT - startT).count() / 1000.0 << " s \n";
-#endif
-
   auto start = std::chrono::steady_clock::now();
   std::priority_queue<std::shared_ptr<Graph>,
                       std::vector<std::shared_ptr<Graph>>, GraphCompare>
@@ -2420,7 +2326,6 @@ Graph::optimize(const std::vector<GraphXfer *> &xfers, double cost_upper_bound,
   auto best_cost = cost_function(this);
 
   candidates.push(best_graph);
-  hashmap.insert(hash());
 
   int invoke_cnt = 0;
 
