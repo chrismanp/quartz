@@ -15,7 +15,7 @@ namespace quartz {
 class EquivalenceSet;
 
 class EquivalenceClass {
- public:
+public:
   // Returns all DAGs in this equivalence class.
   [[nodiscard]] std::vector<CircuitSeq *> get_all_dags() const;
 
@@ -68,12 +68,12 @@ class EquivalenceClass {
   static bool less_than(const EquivalenceClass &ecc1,
                         const EquivalenceClass &ecc2);
 
- private:
+private:
   std::vector<std::unique_ptr<CircuitSeq>> dags_;
 };
 
 class UniquePtrEquivalenceClassComparator {
- public:
+public:
   bool operator()(const std::unique_ptr<EquivalenceClass> &ecc1,
                   const std::unique_ptr<EquivalenceClass> &ecc2) const {
     if (!ecc1 || !ecc2) {
@@ -86,12 +86,15 @@ class UniquePtrEquivalenceClassComparator {
 
 // This class stores all equivalence classes.
 class EquivalenceSet {
- public:
+public:
+  bool load_json(Context *ctx, std::istream &fin,
+                 std::vector<CircuitSeq *> *new_representatives = nullptr);
   // |new_representatives| is for Generator::generate().
   // It will be pushed back all representatives previously not in
   // the equivalence set.
   bool load_json(Context *ctx, const std::string &file_name,
                  std::vector<CircuitSeq *> *new_representatives = nullptr);
+
 
   bool save_json(const std::string &file_name) const;
 
@@ -180,7 +183,7 @@ class EquivalenceSet {
   [[nodiscard]] std::vector<EquivalenceClass *>
   get_containing_class(Context *ctx, CircuitSeq *dag) const;
 
- private:
+private:
   void set_possible_class(const CircuitSeqHashType &hash_value,
                           EquivalenceClass *equiv_class);
   void remove_possible_class(const CircuitSeqHashType &hash_value,
@@ -194,4 +197,4 @@ class EquivalenceSet {
       possible_classes_;
 };
 
-}  // namespace quartz
+} // namespace quartz

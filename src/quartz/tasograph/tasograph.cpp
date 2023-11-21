@@ -2050,6 +2050,12 @@ void Graph::create_xfers(const std::string& eqset_fn,
     std::vector<Context*>& contextArray,
     std::vector<std::vector<GraphXfer *>>& xferArray) {
 
+  if (contextArray.size() < P) {
+    contextArray.resize(P);
+  }
+  if (xferArray.size() < P) {
+    xferArray.resize(P);
+  }
   // Read file is lambda function
   auto read_file = [](const std::string& file_path)->std::string {
     // Open the file
@@ -2074,15 +2080,18 @@ void Graph::create_xfers(const std::string& eqset_fn,
 
   // read the file once and use the string to create P copies of transformations.
   std::string file_contents = read_file(eqset_fn);
-  std::istringstream iss(file_contents);
+
 
   auto gate_set = {GateType::h, GateType::x, GateType::rz, GateType::add,
 		   GateType::cx, GateType::input_qubit, GateType::input_param};
-  for (int i = 0; i < P; i ++) {
+
+  parlay::parallel_for(0, P, [&](size_t i) {
+
+    std::string file_copy (file_contents);
+    std::istringstream iss(file_contents);
     Context *ctxt = new Context(gate_set);
     EquivalenceSet* eqs = new EquivalenceSet();
-    //if (!eqs->load_json(ctxt, iss.str())) {
-    if (!eqs->load_json(ctxt, eqset_fn)) {
+    if (!eqs->load_json(ctxt, iss)) {
       std::cout << "Failed to load equivalence file \"" << "whe"
 		<< "\"." << std::endl;
       assert(false);
@@ -2095,27 +2104,27 @@ void Graph::create_xfers(const std::string& eqset_fn,
     for (const auto &ecc : eccs) {
       CircuitSeq *representative = ecc.front();
       for (auto &circuit : ecc) {
-	if (circuit != representative) {
-          auto xfer =
-	    GraphXfer::create_GraphXfer(ctxt, circuit, representative, true);
-          if (xfer != nullptr) {
-            xfers.push_back(xfer);
-          }
-          xfer = GraphXfer::create_GraphXfer(ctxt, representative, circuit, true);
-          if (xfer != nullptr) {
-            xfers.push_back(xfer);
-          }
-	}
+        if (circuit != representative) {
+                auto xfer =
+            GraphXfer::create_GraphXfer(ctxt, circuit, representative, true);
+                if (xfer != nullptr) {
+                  xfers.push_back(xfer);
+                }
+                xfer = GraphXfer::create_GraphXfer(ctxt, representative, circuit, true);
+                if (xfer != nullptr) {
+                  xfers.push_back(xfer);
+                }
+        }
       }
     }
 
     //contextArray[i] = *ctxt;
     // Perform a shallow copy. The object pointer are not copied.
-    contextArray.push_back(ctxt);
+    contextArray[i] = ctxt;
     // Perform a copy of the xfers vector.
     // The object itself is from the create_GGraphXfer is still a pointer
-    xferArray.push_back(xfers);
-  }
+    xferArray[i] = xfers;
+  });
 }
 
 
@@ -2284,10 +2293,10 @@ Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xferArray,
         auto new_graph = th_candidates[i].top();
         th_candidates[i].pop();
         candidates.push(new_graph);
-        if (candidates.size() > kMaxNumCandidates) {
-          shrink_candidates();
-        }
       }
+    }
+    if (candidates.size() > kMaxNumCandidates) {
+      shrink_candidates();
     }
     best_graph = candidates.top();
     best_cost = cost_function(candidates.top().get());
