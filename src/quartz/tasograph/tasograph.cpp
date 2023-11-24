@@ -2037,29 +2037,29 @@ Graph::optimize(Context *ctx, const std::string &equiv_file_name,
 #else
 
   // Copy the xfers and contex here
-  std::vector<Context*> contextArray;
-  std::vector<std::vector<GraphXfer *>> xferArray;
+  std::vector<Context*> context_array;
+  std::vector<std::vector<GraphXfer *>> xfers_array;
 
-  preprocessed_graph->create_xfers(equiv_file_name, 2, contextArray, xferArray);
+  preprocessed_graph->create_xfers(equiv_file_name, 2, context_array, xfers_array);
 
-  return preprocessed_graph->par_optimize(xferArray, contextArray, cost_upper_bound, circuit_name, "",
+  return preprocessed_graph->par_optimize(xfers_array, context_array, cost_upper_bound, circuit_name, "",
                                       print_message, cost_function, timeout);
 #endif
 
 }
 
-// xferArray is an vector of vector
+// xfers_array is an vector of vector
 // The function copies the array of GraphXfer and Context to each Processor
 void Graph::create_xfers(const std::string& eqset_fn,
     int P,
-    std::vector<Context*>& contextArray,
-    std::vector<std::vector<GraphXfer *>>& xferArray) {
+    std::vector<Context*>& context_array,
+    std::vector<std::vector<GraphXfer *>>& xfers_array) {
 
-  if (contextArray.size() < P) {
-    contextArray.resize(P);
+  if (context_array.size() < P) {
+    context_array.resize(P);
   }
-  if (xferArray.size() < P) {
-    xferArray.resize(P);
+  if (xfers_array.size() < P) {
+    xfers_array.resize(P);
   }
   // Read file is lambda function
   auto read_file = [](const std::string& file_path)->std::string {
@@ -2123,19 +2123,19 @@ void Graph::create_xfers(const std::string& eqset_fn,
       }
     }
 
-    //contextArray[i] = *ctxt;
+    //context_array[i] = *ctxt;
     // Perform a shallow copy. The object pointer are not copied.
-    contextArray[i] = ctxt;
+    context_array[i] = ctxt;
     // Perform a copy of the xfers vector.
     // The object itself is from the create_GGraphXfer is still a pointer
-    xferArray[i] = xfers;
+    xfers_array[i] = xfers;
   });
 }
 
 
 std::shared_ptr<Graph>
-Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xferArray,
-		std::vector<Context*>& contextArray,
+Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xfers_array,
+		std::vector<Context*>& context_array,
                 double cost_upper_bound,
                 const std::string &circuit_name,
                 const std::string &log_file_name, bool print_message,
@@ -2143,25 +2143,21 @@ Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xferArray,
   if (cost_function == nullptr) {
     cost_function = [](Graph *graph) { return graph->total_cost(); };
   }
+  // Keep track the number of nodes explored
+  size_t number_nodes_explored=0;
 
   timer t("par_optimize", true);
-
-
-  size_t nthreads = contextArray.size();
+  size_t nthreads = context_array.size();
 
   auto start = std::chrono::steady_clock::now();
 
 #ifdef OLD_PRIORITY_Q
-
   std::priority_queue<std::shared_ptr<Graph>,
                       std::vector<std::shared_ptr<Graph>>, GraphCompare>
     candidates((GraphCompare(cost_function)));
-
-
   std::priority_queue<std::shared_ptr<Graph>,
                       std::vector<std::shared_ptr<Graph>>, GraphCompare>
     th_candidates[nthreads];// = {((GraphCompare(cost_function))), ((GraphCompare(cost_function)))};
-
 #else
 
   parlay::sequence<std::shared_ptr<Graph>> candidates;
@@ -2192,7 +2188,6 @@ Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xferArray,
   // TODO: make these numbers configurable
   constexpr int kMaxNumCandidates = 40; // 2000
   constexpr int kShrinkToNumCandidates = 20; // 1000
-
   //------------------------------------------------------------------------
 #ifdef OLD_PRIORITY_Q
   auto shrink_candidates = [&]() {
@@ -2239,18 +2234,17 @@ Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xferArray,
   auto seq_optimize = [&](std::shared_ptr<Graph> graph) {
     std::vector<Op> all_nodes;
     auto wid = parlay::worker_id();
-
     graph->topology_order_ops(all_nodes);
 
 #ifdef SEQ_NODE_GENERATION
-    for (size_t i=0; i<xferArray[wid].size(); i++) {
+    for (size_t i=0; i<xfers_array[wid].size(); i++) {
 #else
     // Parallelize the node generation: Improve performance (xfers: 26376)
-    parlay::parallel_for (0, xferArray[wid].size(), [&] (size_t i) {
+    parlay::parallel_for (0, xfers_array[wid].size(), [&] (size_t i) {
 #endif
 	for (auto const &node : all_nodes) {
 	  auto new_graph =
-          graph->apply_xfer(xferArray[wid][i], node, contextArray[wid]->has_parameterized_gate());
+          graph->apply_xfer(xfers_array[wid][i], node, context_array[wid]->has_parameterized_gate());
 
 	  if (new_graph == nullptr)
 	    continue;
@@ -2270,7 +2264,6 @@ Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xferArray,
 	  } else {
 	    continue;
 	  }
-
 	}
 #ifdef SEQ_NODE_GENERATION
       }
@@ -2302,7 +2295,7 @@ Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xferArray,
     size_t maxSize = kShrinkToNumCandidates > candidates.size()? candidates.size() : kShrinkToNumCandidates;
     std::cout << "num candidates = " << maxSize << std::endl;
     parlay::parallel_for (0, maxSize, [&] (size_t i) {
-	    seq_optimize(candidates[i]);
+	seq_optimize(candidates[i]);
     });
     candidates.clear();
     t.next("Expanding the open list nodes\n");
@@ -2348,16 +2341,16 @@ Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xferArray,
 
     // Expensive part excluding seq_optimize
     candidates = parlay::sort(res, less);
+    number_nodes_explored += candidates.size();
     t.next("Sorting open list\n");
     best_graph = *candidates.begin();
     best_cost = cost_function((*(candidates.begin())).get());
 #endif
-
     end = std::chrono::steady_clock::now();
     if (print_message) {
       fprintf(fout,
-              "[%s] Best cost: %f\tcandidate number: %d\tafter %.3f seconds.\n",
-              circuit_name.c_str(), best_cost, candidates.size(),
+              "[%s] Best cost: %f\tcandidate number: %d total number of candidates generated: %ld \tafter %.3f seconds.\n",
+              circuit_name.c_str(), best_cost, candidates.size(), number_nodes_explored,
               (double)std::chrono::duration_cast<std::chrono::milliseconds>(
 									    end - start)
 	      .count() /
@@ -2377,6 +2370,9 @@ Graph::optimize(const std::vector<GraphXfer *> &xfers, double cost_upper_bound,
   if (cost_function == nullptr) {
     cost_function = [](Graph *graph) { return graph->total_cost(); };
   }
+
+  // Keep track the number of nodes explored
+  size_t number_nodes_explored=0;
 
   auto start = std::chrono::steady_clock::now();
   std::priority_queue<std::shared_ptr<Graph>,
@@ -2469,6 +2465,7 @@ Graph::optimize(const std::vector<GraphXfer *> &xfers, double cost_upper_bound,
         if (hashmap.find(new_hash) == hashmap.end()) {
           hashmap.insert(new_hash);
           candidates.push(new_graph);
+	  number_nodes_explored++;
           if (candidates.size() > kMaxNumCandidates) {
             shrink_candidates();
           }
@@ -2484,8 +2481,8 @@ Graph::optimize(const std::vector<GraphXfer *> &xfers, double cost_upper_bound,
     auto end = std::chrono::steady_clock::now();
     if (print_message) {
       fprintf(fout,
-              "[%s] Best cost: %f\tcandidate number: %d\tafter %.3f seconds.\n",
-              circuit_name.c_str(), best_cost, candidates.size(),
+	      "[%s] Best cost: %f\tcandidate number: %d total number of candidates generated: %ld \tafter %.3f seconds.\n",
+              circuit_name.c_str(), best_cost, candidates.size(), number_nodes_explored,
               (double)std::chrono::duration_cast<std::chrono::milliseconds>(
                   end - start)
                       .count() /
