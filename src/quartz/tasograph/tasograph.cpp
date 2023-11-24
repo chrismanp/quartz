@@ -2238,42 +2238,45 @@ Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xferArray,
 
   auto seq_optimize = [&](std::shared_ptr<Graph> graph) {
     std::vector<Op> all_nodes;
-
-    auto best_graph_local = best_graph;
-    auto best_cost_local = best_cost;
     auto wid = parlay::worker_id();
 
     graph->topology_order_ops(all_nodes);
-    for (auto xfer : xferArray[wid]) {
-      for (auto const &node : all_nodes) {
-        auto new_graph =
-          graph->apply_xfer(xfer, node, contextArray[wid]->has_parameterized_gate());
 
-        if (new_graph == nullptr)
-          continue;
-
-        auto new_hash = new_graph->hash();
-        auto new_cost = cost_function(new_graph.get());
-        if (new_cost > cost_upper_bound)
-          continue;
-
-        if (conc_hashmap.insert(new_hash)) {
-          // succeed
-#ifdef OLD_PRIORITY_Q
-          th_candidates[wid].push(new_graph);
+#ifdef SEQ_NODE_GENERATION
+    for (size_t i=0; i<xferArray[wid].size(); i++) {
 #else
-          th_candidates[wid].push_back(new_graph);
+    // Parallelize the node generation: Improve performance (xfers: 26376)
+    parlay::parallel_for (0, xferArray[wid].size(), [&] (size_t i) {
 #endif
-          if (new_cost < best_cost_local) {
-            best_cost_local = new_cost;
-            best_graph_local = new_graph;
-          }
-        } else {
-          continue;
-        }
+	for (auto const &node : all_nodes) {
+	  auto new_graph =
+          graph->apply_xfer(xferArray[wid][i], node, contextArray[wid]->has_parameterized_gate());
 
+	  if (new_graph == nullptr)
+	    continue;
+
+	  auto new_hash = new_graph->hash();
+	  auto new_cost = cost_function(new_graph.get());
+	  if (new_cost > cost_upper_bound)
+	    continue;
+
+	  if (conc_hashmap.insert(new_hash)) {
+	    // succeed
+#ifdef OLD_PRIORITY_Q
+	    th_candidates[wid].push(new_graph);
+#else
+	    th_candidates[wid].push_back(new_graph);
+#endif
+	  } else {
+	    continue;
+	  }
+
+	}
+#ifdef SEQ_NODE_GENERATION
       }
-    }
+#else
+    });
+#endif
   };
 
   //------------------------------------------------------------------------
