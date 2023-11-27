@@ -2242,9 +2242,15 @@ Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xfers_array,
     // Parallelize the node generation: Improve performance (xfers: 26376)
     parlay::parallel_for (0, xfers_array[wid].size(), [&] (size_t i) {
 #endif
+
+#ifdef SEQ_NODE_GENERATION
+	auto wid2 = wid;
+#else
+	auto wid2 = parlay::worker_id();
+#endif
 	for (auto const &node : all_nodes) {
 	  auto new_graph =
-          graph->apply_xfer(xfers_array[wid][i], node, context_array[wid]->has_parameterized_gate());
+          graph->apply_xfer(xfers_array[wid2][i], node, context_array[wid2]->has_parameterized_gate());
 
 	  if (new_graph == nullptr)
 	    continue;
@@ -2257,9 +2263,9 @@ Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xfers_array,
 	  if (conc_hashmap.insert(new_hash)) {
 	    // succeed
 #ifdef OLD_PRIORITY_Q
-	    th_candidates[wid].push(new_graph);
+	    th_candidates[wid2].push(new_graph);
 #else
-	    th_candidates[wid].push_back(new_graph);
+	    th_candidates[wid2].push_back(new_graph);
 #endif
 	  } else {
 	    continue;
@@ -2285,11 +2291,11 @@ Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xfers_array,
       Frontier[iter] = graph1;
       iter++;
     }
-    t.next("Converting the priority queue to a sequence\n");
+    t.next("Converting the priority queue to a sequence");
     parlay::parallel_for (0, Frontier.size(), [&] (size_t i) {
 	    seq_optimize(Frontier[i]);
     });
-    t.next("Expanding the open list nodes\n");
+    t.next("Expanding the open list nodes");
 #else
     // Shrink candidates
     size_t maxSize = kShrinkToNumCandidates > candidates.size()? candidates.size() : kShrinkToNumCandidates;
@@ -2298,7 +2304,7 @@ Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xfers_array,
 	seq_optimize(candidates[i]);
     });
     candidates.clear();
-    t.next("Expanding the open list nodes\n");
+    t.next("Expanding the open list nodes");
 #endif
 
     auto end = std::chrono::steady_clock::now();
@@ -2320,13 +2326,13 @@ Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xfers_array,
         candidates.push(new_graph);
       }
     }
-    t.next("Merging the open list\n");
+    t.next("Merging the open list");
 
     // Expensive part excluding seq_optimize
     if (candidates.size() > kMaxNumCandidates) {
       shrink_candidates();
     }
-    t.next("Shrinking the open list\n");
+    t.next("Shrinking the open list");
     best_graph = candidates.top();
     best_cost = cost_function(candidates.top().get());
 #else
@@ -2335,14 +2341,14 @@ Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xfers_array,
     for(size_t i=0; i<nthreads; i++) {
       res = parlay::merge(th_candidates[i], res);
     }
-    t.next("Merging the open list\n");
+    t.next("Merging the open list");
     auto less = [&](std::shared_ptr<Graph> a, std::shared_ptr<Graph> b) {
       return cost_function(a.get()) < cost_function(b.get()); };
 
     // Expensive part excluding seq_optimize
     candidates = parlay::sort(res, less);
     number_nodes_explored += candidates.size();
-    t.next("Sorting open list\n");
+    t.next("Sorting open list");
     best_graph = *candidates.begin();
     best_cost = cost_function((*(candidates.begin())).get());
 #endif

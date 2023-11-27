@@ -3,19 +3,24 @@
 
 #include <stdlib.h>
 #include <sys/time.h>
+#include <unistd.h>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <string>
+
+// Add capability to track virtual memory allocated: https://bertvandenbroucke.netlify.app/2019/04/18/memory-logging/
 
 struct timer {
   double total_time;
   double last_time;
   bool on;
+  bool mem_on;
   std::string name;
   struct timezone tzp;
 
   timer(std::string name = "PBBS time", bool _start = true)
-  : total_time(0.0), on(false), name(name), tzp({0,0}) {
+  : total_time(0.0), on(false), mem_on(true), name(name), tzp({0,0}) {
     if (_start) start();
   }
 
@@ -64,6 +69,12 @@ struct timer {
     if (str.length() > 0)
       std::cout << str << ": ";
     std::cout << time << std::endl;
+    if(mem_on) {
+      std::ifstream statm("/proc/self/statm");
+      unsigned int vmem_size;
+      statm >> vmem_size;
+      std::cout << "Memory usage: " << vmem_size  << " bytes" << std::endl;
+    }
     std::cout.flags(cout_settings);
   }
 
