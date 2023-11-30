@@ -106,10 +106,10 @@ void Graph::_construct_pos_2_logical_qubit() {
   }
 }
 
-Graph::Graph(Context *ctx) : context(ctx), special_op_guid(0) {}
+Graph::Graph(Context *ctx) : context(ctx), special_op_guid(0),  hashCached(0) {}
 
 Graph::Graph(Context *ctx, const CircuitSeq *seq)
-    : context(ctx), special_op_guid(0) {
+  : context(ctx), special_op_guid(0), hashCached(0) {
   // Guid for input qubit and input parameter wires
   int num_input_qubits = seq->get_num_qubits();
   int num_input_params = seq->get_num_input_parameters();
@@ -217,6 +217,7 @@ Graph::Graph(const Graph &graph) {
   pos_2_logical_qubit = graph.pos_2_logical_qubit;
   inEdges = graph.inEdges;
   outEdges = graph.outEdges;
+  hashCached = graph.hashCached;
 }
 
 std::unique_ptr<CircuitSeq> Graph::to_circuit_sequence() const {
@@ -464,6 +465,9 @@ bool Graph::check_correctness(void) {
 
 // TODO: add constant parameters
 size_t Graph::hash(void) {
+  if(hashCached != 0)
+    return hashCached;
+
   size_t total = 0;
   std::map<Op, std::set<Edge, EdgeCompare>, OpCompare>::const_iterator it;
   std::unordered_map<size_t, size_t> hash_values;
@@ -515,6 +519,7 @@ size_t Graph::hash(void) {
       }
     }
   }
+  hashCached = total;
   return total;
 }
 
@@ -2175,8 +2180,8 @@ Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xfers_array,
   }
 
   // TODO: make these numbers configurable
-  constexpr int kMaxNumCandidates = 200; // 2000
-  constexpr int kShrinkToNumCandidates = 200; // 1000
+  constexpr int kMaxNumCandidates = 20; // 2000
+  constexpr int kShrinkToNumCandidates = 20; // 1000
   //------------------------------------------------------------------------
 
   //------------------------------------------------------------------------
@@ -2265,12 +2270,13 @@ Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xfers_array,
       if (cost1 != cost2) {
         return cost1 < cost2;
       } else {
-        return a->hash() < b->hash();
+	return a->hash() < b->hash();
       }
     };
-    candidates = parlay::remove_duplicates_ordered (res, less);
+    candidates = parlay::remove_duplicates_ordered(res, less);
+    t.next("Computing frontier: deduplicated");
     candidates = parlay::sort(candidates, less);
-    t.next("Computing frontier: sorted and deduplicated");
+    t.next("Computing frontier: sorted");
 
     std::cout << "after removing duplicates/sorting size = " << candidates.size() << "\n";
 
