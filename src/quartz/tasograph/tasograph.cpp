@@ -2132,6 +2132,10 @@ void Graph::create_xfers(const std::string& eqset_fn,
   });
 }
 
+std::shared_ptr<Graph> graph_transfer (std::shared_ptr<Graph> graph, Context * ctxt) {
+  return graph->from_qasm_str(ctxt, graph->to_qasm());
+}
+
 
 std::shared_ptr<Graph>
 Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xfers_array,
@@ -2151,29 +2155,14 @@ Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xfers_array,
 
   auto start = std::chrono::steady_clock::now();
 
-#ifdef OLD_PRIORITY_Q
-  std::priority_queue<std::shared_ptr<Graph>,
-                      std::vector<std::shared_ptr<Graph>>, GraphCompare>
-    candidates((GraphCompare(cost_function)));
-  std::priority_queue<std::shared_ptr<Graph>,
-                      std::vector<std::shared_ptr<Graph>>, GraphCompare>
-    th_candidates[nthreads];// = {((GraphCompare(cost_function))), ((GraphCompare(cost_function)))};
-#else
-
   parlay::sequence<std::shared_ptr<Graph>> candidates;
-  parlay::sequence<std::shared_ptr<Graph>> th_candidates[nthreads];
-
-#endif
+  // parlay::sequence<std::shared_ptr<Graph>> th_candidates[nthreads];
 
   std::shared_ptr<Graph> best_graph(new Graph(*this));
   //parlay::hashtable<quartz::graph_hashtable> conc_hashmap(100000, quartz::graph_hashtable{});
   auto best_cost = cost_function(this);
-
-#ifdef OLD_PRIORITY_Q
-  candidates.push(best_graph);
-#else
   candidates.push_back(best_graph);
-#endif
+
   parlay::hashtable<parlay::hash_numeric<int>> conc_hashmap(100000, parlay::hash_numeric<int>{});
 
   FILE *fout = nullptr;
@@ -2186,176 +2175,116 @@ Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xfers_array,
   }
 
   // TODO: make these numbers configurable
-  constexpr int kMaxNumCandidates = 40; // 2000
-  constexpr int kShrinkToNumCandidates = 20; // 1000
+  constexpr int kMaxNumCandidates = 200; // 2000
+  constexpr int kShrinkToNumCandidates = 200; // 1000
   //------------------------------------------------------------------------
-#ifdef OLD_PRIORITY_Q
-  auto shrink_candidates = [&]() {
-
-    // TODO: TURN HASHMAP INTO SET AND CREATE A NEW ONE?
-    if (print_message) {
-      fprintf(fout, "%s: shrink the priority queue with %d candidates.\n",
-              circuit_name.c_str(), (int)candidates.size());
-    }
-    auto shrink_start = std::chrono::steady_clock::now();
-    std::priority_queue<std::shared_ptr<Graph>,
-                        std::vector<std::shared_ptr<Graph>>, GraphCompare>
-        new_candidates((GraphCompare(cost_function)));
-    std::map<float, int> cost_count;
-    while (!candidates.empty()) {
-      auto candidate = candidates.top();
-      cost_count[cost_function(candidate.get())]++;
-      if (new_candidates.size() < kShrinkToNumCandidates) {
-        new_candidates.push(candidate);
-      }
-      candidates.pop();
-    }
-    std::swap(candidates, new_candidates);
-    auto shrink_end = std::chrono::steady_clock::now();
-    if (print_message) {
-      fprintf(
-          fout,
-          "%s: shrank the priority queue to %d candidates in %.3f seconds.\n",
-          circuit_name.c_str(), (int)candidates.size(),
-          (double)std::chrono::duration_cast<std::chrono::milliseconds>(
-              shrink_end - shrink_start)
-                  .count() /
-              1000.0);
-      for (auto &it : cost_count) {
-        fprintf(fout, "%d circuits have cost %.2f\n", it.second, it.first);
-      }
-      fflush(fout);
-    }
-  };
-#endif
 
   //------------------------------------------------------------------------
 
-  auto seq_optimize = [&](std::shared_ptr<Graph> graph) {
+
+  auto neighbors = [&](std::shared_ptr<Graph> graph) {
     std::vector<Op> all_nodes;
     auto wid = parlay::worker_id();
+    // graph = graph_transfer(graph, context_array[wid]);
     graph->topology_order_ops(all_nodes);
+    // NOTE: The context in graph differs from the context we use on this procs. This may cuse
 
-#ifdef SEQ_NODE_GENERATION
-    for (size_t i=0; i<xfers_array[wid].size(); i++) {
-#else
-    // Parallelize the node generation: Improve performance (xfers: 26376)
-    parlay::parallel_for (0, xfers_array[wid].size(), [&] (size_t i) {
-#endif
+    size_t num_xfers = xfers_array[wid].size();
+    size_t num_nodes = all_nodes.size();
+    auto apply = [&] (size_t i) -> std::shared_ptr<Graph> {
+      size_t xfer_id = i / num_nodes;
+      size_t node_id = i % num_nodes;
+      auto wid = parlay::worker_id();
+      auto new_graph =
+        graph->apply_xfer(xfers_array[wid][xfer_id], all_nodes[node_id], context_array[wid]->has_parameterized_gate());
+      if (new_graph == nullptr || cost_function(new_graph.get()) > cost_upper_bound)
+        return nullptr;
+      else
+        return graph_transfer(new_graph, context_array[0]);
+    };
 
-#ifdef SEQ_NODE_GENERATION
-	auto wid2 = wid;
-#else
-	auto wid2 = parlay::worker_id();
-#endif
-	for (auto const &node : all_nodes) {
-	  auto new_graph =
-          graph->apply_xfer(xfers_array[wid2][i], node, context_array[wid2]->has_parameterized_gate());
+    auto children =
+      parlay::delayed_tabulate (num_xfers * num_nodes, apply);
 
-	  if (new_graph == nullptr)
-	    continue;
+    return parlay::filter (children, [](std::shared_ptr<Graph> x) {return x != nullptr;});
+// #ifdef SEQ_NODE_GENERATION
+//     for (size_t i=0; i<xfers_array[wid].size(); i++) {
+// #else
+//     // Parallelize the node generation: Improve performance (xfers: 26376)
+//     parlay::parallel_for (0, xfers_array[wid].size(), [&] (size_t i) {
+// #endif
 
-	  auto new_hash = new_graph->hash();
-	  auto new_cost = cost_function(new_graph.get());
-	  if (new_cost > cost_upper_bound)
-	    continue;
+// #ifdef SEQ_NODE_GENERATION
+// 	auto wid2 = wid;
+// #else
+// 	auto wid2 = parlay::worker_id();
+// #endif
+// 	for (auto const &node : all_nodes) {
+// 	  auto new_graph =
+//           graph->apply_xfer(xfers_array[wid2][i], node, context_array[wid2]->has_parameterized_gate());
 
-	  if (conc_hashmap.insert(new_hash)) {
-	    // succeed
-#ifdef OLD_PRIORITY_Q
-	    th_candidates[wid2].push(new_graph);
-#else
-	    th_candidates[wid2].push_back(new_graph);
-#endif
-	  } else {
-	    continue;
-	  }
-	}
-#ifdef SEQ_NODE_GENERATION
-      }
-#else
-    });
-#endif
+// 	  if (new_graph == nullptr)
+// 	    continue;
+
+// 	  auto new_cost = cost_function(new_graph.get());
+// 	  if (new_cost > cost_upper_bound)
+// 	    continue;
+
+//     auto res = graph_transfer(new_graph, context_array[0]);
+//     children.push_back(res);
+// 	}
+// #ifdef SEQ_NODE_GENERATION
+//       }
+// #else
+//     });
+// #endif
+//   return children;
   };
 
   //------------------------------------------------------------------------
   while(!candidates.empty()) {
-
-#ifdef OLD_PRIORITY_Q
     std::cout << "num candidates = " << candidates.size() << std::endl;
-    parlay::sequence<std::shared_ptr<Graph>> Frontier(candidates.size(), nullptr);
-    int iter = 0;
-    while(!candidates.empty()) {
-      auto graph1 = candidates.top();
-      candidates.pop();
-      Frontier[iter] = graph1;
-      iter++;
-    }
-    t.next("Converting the priority queue to a sequence");
-    parlay::parallel_for (0, Frontier.size(), [&] (size_t i) {
-	    seq_optimize(Frontier[i]);
-    });
-    t.next("Expanding the open list nodes");
-#else
-    // Shrink candidates
-    size_t maxSize = kShrinkToNumCandidates > candidates.size()? candidates.size() : kShrinkToNumCandidates;
-    std::cout << "num candidates = " << maxSize << std::endl;
-    parlay::parallel_for (0, maxSize, [&] (size_t i) {
-	seq_optimize(candidates[i]);
-    });
-    candidates.clear();
-    t.next("Expanding the open list nodes");
-#endif
 
     auto end = std::chrono::steady_clock::now();
-    if ((int)std::chrono::duration_cast<std::chrono::milliseconds>(end -
-								   start)
-	.count() /
-	1000.0 >
-	timeout) {
+    if ((int)std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() / 1000.0 > timeout) {
       std::cout << "Timeout. Program terminated. Best cost is " << best_cost << std::endl;
       return best_graph;
     }
 
-#ifdef OLD_PRIORITY_Q
-    // Sequentially insert priority queue into seq priority queue
-    for(size_t i=0; i<nthreads; i++) {
-      while(!th_candidates[i].empty()) {
-        auto new_graph = th_candidates[i].top();
-        th_candidates[i].pop();
-        candidates.push(new_graph);
-      }
-    }
-    t.next("Merging the open list");
 
-    // Expensive part excluding seq_optimize
-    if (candidates.size() > kMaxNumCandidates) {
-      shrink_candidates();
-    }
-    t.next("Shrinking the open list");
-    best_graph = candidates.top();
-    best_cost = cost_function(candidates.top().get());
-#else
-    // Merge sequence using parlay library
-    parlay::sequence<std::shared_ptr<Graph>> res;
-    for(size_t i=0; i<nthreads; i++) {
-      res = parlay::merge(th_candidates[i], res);
-    }
-    t.next("Merging the open list");
+    parlay::sequence<std::shared_ptr<Graph>> res = parlay::flatten (parlay::map (candidates, neighbors));
+
+    t.next("Computing frontier: retrieved all children nodes");
+    std::cout << "before duplicates/sorting size = " << res.size() << "\n";
+
+    number_nodes_explored += res.size();
+
     auto less = [&](std::shared_ptr<Graph> a, std::shared_ptr<Graph> b) {
-      return cost_function(a.get()) < cost_function(b.get()); };
+      auto cost1 = cost_function(a.get());
+      auto cost2 = cost_function(b.get());
+      if (cost1 != cost2) {
+        return cost1 < cost2;
+      } else {
+        return a->hash() < b->hash();
+      }
+    };
+    candidates = parlay::remove_duplicates_ordered (res, less);
+    candidates = parlay::sort(candidates, less);
+    t.next("Computing frontier: sorted and deduplicated");
 
-    // Expensive part excluding seq_optimize
-    candidates = parlay::sort(res, less);
-    number_nodes_explored += candidates.size();
+    std::cout << "after removing duplicates/sorting size = " << candidates.size() << "\n";
+
+    if (candidates.size() > kMaxNumCandidates) {
+      candidates = candidates.subseq(0, kShrinkToNumCandidates);
+    }
+
     t.next("Sorting open list");
     best_graph = *candidates.begin();
     best_cost = cost_function((*(candidates.begin())).get());
-#endif
     end = std::chrono::steady_clock::now();
     if (print_message) {
       fprintf(fout,
-              "[%s] Best cost: %f\tcandidate number: %d total number of candidates generated: %ld \tafter %.3f seconds.\n",
+              "[%s] Best cost: %f\t num candidates in this round: %d num candidates in total: %ld \tafter %.3f seconds.\n",
               circuit_name.c_str(), best_cost, candidates.size(), number_nodes_explored,
               (double)std::chrono::duration_cast<std::chrono::milliseconds>(
 									    end - start)
