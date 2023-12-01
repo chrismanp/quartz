@@ -350,9 +350,6 @@ class Graph {
   bool _pattern_matching(
       GraphXfer *xfer, Op op,
       std::deque<std::pair<OpX *, Op>> &matched_opx_op_pairs_dq) const;
-
-
-  size_t hashCached;
  public:
   size_t special_op_guid;
   Context *context;
