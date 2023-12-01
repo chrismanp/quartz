@@ -2156,14 +2156,14 @@ Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xfers_array,
   auto start = std::chrono::steady_clock::now();
 
   // A sequence of a pair of graph and its hash value
-  using graph_hash_t = std::pair<std::shared_ptr<Graph>, size_t>;
-  parlay::sequence<graph_hash_t> candidates;
+  using graph_info = std::tuple<std::shared_ptr<Graph>, size_t, float>;
+  parlay::sequence<graph_info> candidates;
   // parlay::sequence<std::shared_ptr<Graph>> th_candidates[nthreads];
 
   std::shared_ptr<Graph> best_graph(new Graph(*this));
   //parlay::hashtable<quartz::graph_hashtable> conc_hashmap(100000, quartz::graph_hashtable{});
   auto best_cost = cost_function(this);
-  candidates.push_back(std::make_pair(best_graph, this->hash()));
+  candidates.push_back(std::make_tuple(best_graph, this->hash(), best_cost));
 
   parlay::hashtable<parlay::hash_numeric<int>> conc_hashmap(100000, parlay::hash_numeric<int>{});
 
@@ -2183,18 +2183,18 @@ Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xfers_array,
 
   //------------------------------------------------------------------------
 
-  auto deep_neighbors = [&](graph_hash_t graph_hash_pair) {
+  auto deep_neighbors = [&](graph_info graph_tup) {
 
     // graph = graph_transfer(graph, context_array[wid]);
-    auto wid = parlay::worker_id();
 
-    auto num_xfers = xfers_array[wid].size();
+    auto num_xfers = xfers_array[0].size();
 
-    auto apply_deep = [&] (size_t i) -> graph_hash_t {
-      auto xfer = xfers_array[parlay::worker_id()][i];
+    auto apply_deep = [&] (size_t i) -> graph_info {
+      auto wid = parlay::worker_id();
+      auto xfer = xfers_array[wid][i];
       bool any_changes = false;
       bool fix_point = false;
-      auto g = graph_hash_pair.first;
+      auto g = std::get<0>(graph_tup);
       int counter = 0;
       while(!fix_point && counter < 10) {
         std::vector<Op> all_nodes;
@@ -2214,47 +2214,50 @@ Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xfers_array,
       }
       if (any_changes) {
         auto new_graph = graph_transfer (g, context_array[0]);
-        return std::make_pair(new_graph,new_graph->hash());
+        return std::make_tuple(new_graph,new_graph->hash(), cost_function(new_graph.get()));
       }
-      else return std::make_pair(nullptr, 0);
+      else return std::make_tuple(nullptr, 0, 0.0);
     };
 
     auto children = parlay::delayed_tabulate (num_xfers, apply_deep);
 
-    return parlay::filter (children, [&](graph_hash_t x) {return x.first != nullptr && conc_hashmap.find(x.second) == -1;});
+    return parlay::filter (children, [&](graph_info x) {return std::get<0>(x) != nullptr && conc_hashmap.find(std::get<1>(x)) == -1;});
   };
 
-  auto neighbors = [&](graph_hash_t graph_hash_pair) {
+  auto neighbors = [&](graph_info graph_tup) {
     std::vector<Op> all_nodes;
     auto wid = parlay::worker_id();
     // graph = graph_transfer(graph, context_array[wid]);
-    graph_hash_pair.first->topology_order_ops(all_nodes);
+    auto graph = std::get<0>(graph_tup);
+    graph->topology_order_ops(all_nodes);
     // NOTE: The context in graph differs from the context we use on this procs. This may cuse
 
     size_t num_xfers = xfers_array[wid].size();
     size_t num_nodes = all_nodes.size();
-    auto apply = [&] (size_t i) -> graph_hash_t {
+    auto apply = [&] (size_t i) -> graph_info {
       size_t xfer_id = i / num_nodes;
       size_t node_id = i % num_nodes;
       auto wid = parlay::worker_id();
       auto new_graph =
-        graph_hash_pair.first->apply_xfer(xfers_array[wid][xfer_id], all_nodes[node_id], context_array[wid]->has_parameterized_gate());
-      if (new_graph == nullptr || cost_function(new_graph.get()) > cost_upper_bound)
-        return std::make_pair(nullptr, 0);
+        graph->apply_xfer(xfers_array[wid][xfer_id], all_nodes[node_id], context_array[wid]->has_parameterized_gate());
+      if (new_graph == nullptr)
+        return std::make_tuple(nullptr, 0, 0.0);
       else {
+        auto new_cost = cost_function(new_graph.get());
         auto ngt = graph_transfer(new_graph, context_array[0]);
         auto hash_value = ngt->hash();
-        if (conc_hashmap.find(hash_value) != -1)
-          return std::make_pair(nullptr, 0);
-        else
-          return std::make_pair(ngt, hash_value);
+        if (conc_hashmap.find(hash_value) != -1 || new_cost > cost_upper_bound)
+          return std::make_tuple(nullptr, 0, 0.0);
+        else {
+          return std::make_tuple(ngt, hash_value, new_cost);
+        }
       }
     };
 
     auto children =
       parlay::delayed_tabulate (num_xfers * num_nodes, apply);
 
-    return parlay::filter (children, [](graph_hash_t x) {return x.first != nullptr;});
+    return parlay::filter (children, [](graph_info x) {return std::get<0> (x) != nullptr;});
 // #ifdef SEQ_NODE_GENERATION
 //     for (size_t i=0; i<xfers_array[wid].size(); i++) {
 // #else
@@ -2305,13 +2308,13 @@ Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xfers_array,
     std::cout << "before duplicates/sorting size = " << res.size() << "\n";
 
 
-    auto less = [&](graph_hash_t a, graph_hash_t b) {
-      auto cost1 = cost_function(a.first.get());
-      auto cost2 = cost_function(b.first.get());
-      if (cost1 != cost2) {
-        return cost1 < cost2;
+    auto less = [&](graph_info a, graph_info b) {
+      auto [ga, ha, ca] = a;
+      auto [gb, hb, cb] = b;
+      if (ca != cb) {
+        return ca < cb;
       } else {
-	return a.second < b.second;
+	      return ha < hb;
       }
     };
     candidates = parlay::remove_duplicates_ordered (res, less);
@@ -2321,7 +2324,7 @@ Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xfers_array,
     t.next("Computing frontier: sorted");
     parlay::parallel_for (0,
       candidates.size(),
-      [&](size_t i) {auto x = conc_hashmap.insert(candidates[i].second);});
+      [&](size_t i) {auto x = conc_hashmap.insert(std::get<1>(candidates[i]));});
     t.next("Computing frontier: Global hash updated");
 
     std::cout << "after removing duplicates/sorting size = " << candidates.size() << "\n";
@@ -2330,9 +2333,9 @@ Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xfers_array,
       candidates = candidates.subseq(0, kShrinkToNumCandidates);
     }
 
-    auto new_cost = cost_function(candidates[0].first.get());
+    auto new_cost = std::get<2>(candidates[0]);
     if (new_cost < best_cost) {
-      best_graph = candidates[0].first;
+      best_graph = std::get<0>(candidates[0]);
       best_cost = new_cost;
     }
     end = std::chrono::steady_clock::now();
