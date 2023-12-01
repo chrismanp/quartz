@@ -2205,7 +2205,13 @@ Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xfers_array,
       if (new_graph == nullptr || cost_function(new_graph.get()) > cost_upper_bound)
         return nullptr;
       else
-        return graph_transfer(new_graph, context_array[0]);
+        {
+          auto ngt = graph_transfer(new_graph, context_array[0]);
+          if (conc_hashmap.find(ngt->hash()) != -1)
+            return nullptr;
+          else
+            return ngt;
+        }
     };
 
     auto children =
@@ -2256,8 +2262,7 @@ Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xfers_array,
       return best_graph;
     }
 
-
-    parlay::sequence<std::shared_ptr<Graph>> res = parlay::flatten (parlay::map (candidates, neighbors));
+    parlay::sequence<std::shared_ptr<Graph>> res = parlay::flatten (parlay::map (candidates, neighbors, 1));
 
     t.next("Computing frontier: retrieved all children nodes");
     std::cout << "before duplicates/sorting size = " << res.size() << "\n";
@@ -2277,6 +2282,11 @@ Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xfers_array,
     t.next("Computing frontier: deduplicated");
     candidates = parlay::sort(candidates, less);
     t.next("Computing frontier: sorted");
+    parlay::parallel_for (0,
+      candidates.size(),
+      [&](size_t i) {auto x = conc_hashmap.insert(candidates[i]->hash());});
+
+    t.next("Computing frontier: hashmap");
 
     std::cout << "after removing duplicates/sorting size = " << candidates.size() << "\n";
 
@@ -2285,8 +2295,11 @@ Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xfers_array,
     }
 
     t.next("Sorting open list");
-    best_graph = *candidates.begin();
-    best_cost = cost_function((*(candidates.begin())).get());
+    auto new_cost = cost_function(candidates[0].get());
+    if (new_cost < best_cost) {
+      best_graph = candidates[0];
+      best_cost = new_cost;
+    }
     end = std::chrono::steady_clock::now();
     if (print_message) {
       fprintf(fout,
