@@ -2180,12 +2180,50 @@ Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xfers_array,
   }
 
   // TODO: make these numbers configurable
-  constexpr int kMaxNumCandidates = 20; // 2000
-  constexpr int kShrinkToNumCandidates = 20; // 1000
+  constexpr int kMaxNumCandidates = 10; // 500
+  constexpr int kShrinkToNumCandidates = 10; // 1000
   //------------------------------------------------------------------------
 
   //------------------------------------------------------------------------
 
+  auto deep_neighbors = [&](std::shared_ptr<Graph> graph) {
+
+    // graph = graph_transfer(graph, context_array[wid]);
+    auto wid = parlay::worker_id();
+
+    auto num_xfers = xfers_array[wid].size();
+
+    auto apply_deep = [&] (size_t i) -> std::shared_ptr<Graph> {
+      auto xfer = xfers_array[parlay::worker_id()][i];
+      bool any_changes = false;
+      bool fix_point = false;
+      auto g = graph;
+      int counter = 0;
+      while(!fix_point && counter < 10) {
+        std::vector<Op> all_nodes;
+        g->topology_order_ops(all_nodes);
+        for (auto const &node : all_nodes) {
+          auto new_graph =
+            g->apply_xfer(xfer, node, context_array[wid]->has_parameterized_gate());
+          if (new_graph != nullptr) {
+            g.swap(new_graph);
+            any_changes = true;
+            fix_point = false;
+            counter ++;
+            break;
+          }
+        }
+        fix_point = true;
+      }
+      if (any_changes)
+        return graph_transfer (g, context_array[0]);
+      else return nullptr;
+    };
+
+    auto children = parlay::delayed_tabulate (num_xfers, apply_deep);
+
+    return parlay::filter (children, [&](std::shared_ptr<Graph> x) {return x != nullptr && conc_hashmap.find(x->hash()) == -1;});
+  };
 
   auto neighbors = [&](std::shared_ptr<Graph> graph) {
     std::vector<Op> all_nodes;
@@ -2204,14 +2242,13 @@ Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xfers_array,
         graph->apply_xfer(xfers_array[wid][xfer_id], all_nodes[node_id], context_array[wid]->has_parameterized_gate());
       if (new_graph == nullptr || cost_function(new_graph.get()) > cost_upper_bound)
         return nullptr;
-      else
-        {
-          auto ngt = graph_transfer(new_graph, context_array[0]);
-          if (conc_hashmap.find(ngt->hash()) != -1)
-            return nullptr;
-          else
-            return ngt;
-        }
+      else {
+        auto ngt = graph_transfer(new_graph, context_array[0]);
+        if (conc_hashmap.find(ngt->hash()) != -1)
+          return nullptr;
+        else
+          return ngt;
+      }
     };
 
     auto children =
@@ -2262,12 +2299,11 @@ Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xfers_array,
       return best_graph;
     }
 
-    parlay::sequence<std::shared_ptr<Graph>> res = parlay::flatten (parlay::map (candidates, neighbors, 1));
+    parlay::sequence<std::shared_ptr<Graph>> res = parlay::flatten (parlay::map (candidates, deep_neighbors));
 
     t.next("Computing frontier: retrieved all children nodes");
     std::cout << "before duplicates/sorting size = " << res.size() << "\n";
 
-    number_nodes_explored += res.size();
 
     auto less = [&](std::shared_ptr<Graph> a, std::shared_ptr<Graph> b) {
       auto cost1 = cost_function(a.get());
@@ -2278,7 +2314,8 @@ Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xfers_array,
 	return a->hash() < b->hash();
       }
     };
-    candidates = parlay::remove_duplicates_ordered(res, less);
+    candidates = parlay::remove_duplicates_ordered (res, less);
+    number_nodes_explored += candidates.size();
     t.next("Computing frontier: deduplicated");
     candidates = parlay::sort(candidates, less);
     t.next("Computing frontier: sorted");
