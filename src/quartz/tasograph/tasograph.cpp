@@ -14,8 +14,6 @@
 #include <cassert>
 #include <iomanip>
 
-//#define OLD_PRIORITY_Q
-
 namespace quartz {
 
 // TODO: GUID_PRESERVED depends on the global guid in Context class, need to
@@ -2148,9 +2146,12 @@ Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xfers_array,
     cost_function = [](Graph *graph) { return graph->total_cost(); };
   }
 
-  // TODO: make these numbers configurable
-  constexpr int kMaxNumCandidates = 10;
-  constexpr int kShrinkToNumCandidates = 10;
+  int QUARTZ_BEAMSIZE=10;
+  if (const char* env_p = std::getenv("QUARTZ_BEAMSIZE"))
+    QUARTZ_BEAMSIZE=atoi(env_p);
+
+  int kMaxNumCandidates = QUARTZ_BEAMSIZE;
+  int kShrinkToNumCandidates = QUARTZ_BEAMSIZE;
 
   // Keep track the number of nodes explored
   size_t number_nodes_explored=0;
