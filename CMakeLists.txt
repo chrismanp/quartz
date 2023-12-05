@@ -1,7 +1,8 @@
 cmake_minimum_required(VERSION 3.16)
 project(Quartz)
 
-SET(CMAKE_BUILD_TYPE "Debug")
+#SET(CMAKE_BUILD_TYPE "Debug")
+SET(CMAKE_BUILD_TYPE "Runtime")
 
 # python
 if (MSVC)
