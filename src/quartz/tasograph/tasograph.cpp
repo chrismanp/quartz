@@ -2043,7 +2043,7 @@ Graph::optimize(Context *ctx, const std::string &equiv_file_name,
   preprocessed_graph->create_xfers(equiv_file_name, 2, context_array, xfers_array);
 
   return preprocessed_graph->par_optimize(xfers_array, context_array, cost_upper_bound, circuit_name, "",
-                                      print_message, cost_function, timeout);
+					  print_message, false, cost_function, timeout);
 #endif
 
 }
@@ -2142,11 +2142,16 @@ Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xfers_array,
 		std::vector<Context*>& context_array,
                 double cost_upper_bound,
                 const std::string &circuit_name,
-                const std::string &log_file_name, bool print_message,
+                const std::string &log_file_name, bool print_message, bool breadth_search,
                 std::function<float(Graph *)> cost_function, int timeout) {
   if (cost_function == nullptr) {
     cost_function = [](Graph *graph) { return graph->total_cost(); };
   }
+
+  // TODO: make these numbers configurable
+  constexpr int kMaxNumCandidates = 10;
+  constexpr int kShrinkToNumCandidates = 10;
+
   // Keep track the number of nodes explored
   size_t number_nodes_explored=0;
 
@@ -2176,9 +2181,6 @@ Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xfers_array,
     }
   }
 
-  // TODO: make these numbers configurable
-  constexpr int kMaxNumCandidates = 10; // 500
-  constexpr int kShrinkToNumCandidates = 10; // 1000
   //------------------------------------------------------------------------
 
   //------------------------------------------------------------------------
@@ -2224,7 +2226,7 @@ Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xfers_array,
     return parlay::filter (children, [&](graph_info x) {return std::get<0>(x) != nullptr && conc_hashmap.find(std::get<1>(x)) == -1;});
   };
 
-  auto neighbors = [&](graph_info graph_tup) {
+  auto breadth_neighbors = [&](graph_info graph_tup) {
     std::vector<Op> all_nodes;
     auto wid = parlay::worker_id();
     // graph = graph_transfer(graph, context_array[wid]);
@@ -2258,38 +2260,6 @@ Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xfers_array,
       parlay::delayed_tabulate (num_xfers * num_nodes, apply);
 
     return parlay::filter (children, [](graph_info x) {return std::get<0> (x) != nullptr;});
-// #ifdef SEQ_NODE_GENERATION
-//     for (size_t i=0; i<xfers_array[wid].size(); i++) {
-// #else
-//     // Parallelize the node generation: Improve performance (xfers: 26376)
-//     parlay::parallel_for (0, xfers_array[wid].size(), [&] (size_t i) {
-// #endif
-
-// #ifdef SEQ_NODE_GENERATION
-// 	auto wid2 = wid;
-// #else
-// 	auto wid2 = parlay::worker_id();
-// #endif
-// 	for (auto const &node : all_nodes) {
-// 	  auto new_graph =
-//           graph->apply_xfer(xfers_array[wid2][i], node, context_array[wid2]->has_parameterized_gate());
-
-// 	  if (new_graph == nullptr)
-// 	    continue;
-
-// 	  auto new_cost = cost_function(new_graph.get());
-// 	  if (new_cost > cost_upper_bound)
-// 	    continue;
-
-//     auto res = graph_transfer(new_graph, context_array[0]);
-//     children.push_back(res);
-// 	}
-// #ifdef SEQ_NODE_GENERATION
-//       }
-// #else
-//     });
-// #endif
-//   return children;
   };
 
   //------------------------------------------------------------------------
@@ -2302,11 +2272,14 @@ Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xfers_array,
       return best_graph;
     }
 
-    auto res = parlay::flatten (parlay::map (candidates, deep_neighbors));
+    parlay::sequence<graph_info> res;
+    if(breadth_search)
+      res = parlay::flatten (parlay::map (candidates, breadth_neighbors));
+    else
+      res = parlay::flatten (parlay::map (candidates, deep_neighbors));
 
     t.next("Computing frontier: retrieved all children nodes");
     std::cout << "before duplicates/sorting size = " << res.size() << "\n";
-
 
     auto less = [&](graph_info a, graph_info b) {
       auto [ga, ha, ca] = a;

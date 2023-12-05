@@ -11,7 +11,7 @@
 using namespace quartz;
 
 void parse_args(char **argv, int argc, bool &simulated_annealing,
-                bool &early_stop, bool &disable_search, bool &serial_search,
+                bool &early_stop, bool &disable_search, bool &serial_search, bool &breadth_search, int &timeout,
                 std::string &input_filename, std::string &output_filename,
                 std::string &eqset_filename) {
   assert(argv[1] != nullptr);
@@ -34,6 +34,14 @@ void parse_args(char **argv, int argc, bool &simulated_annealing,
       serial_search = true;
       continue;
     }
+    if (!std::strcmp(argv[i], "--breadth")) {
+      breadth_search = true;
+      continue;
+    }
+    if (!std::strcmp(argv[i], "--timeout")) {
+      timeout = std::stoi(std::string(argv[++i]));
+      continue;
+    }
 
   }
 }
@@ -45,7 +53,9 @@ int main(int argc, char **argv) {
   bool early_stop = false;
   bool disable_search = false;
   bool serial_search = false;
-  parse_args(argv, argc, simulated_annealing, early_stop, disable_search, serial_search,
+  bool breadth_search = false;
+  int timeout = 3600;
+  parse_args(argv, argc, simulated_annealing, early_stop, disable_search, serial_search, breadth_search, timeout,
              input_fn, output_fn, eqset_fn);
 
   Context ctx({GateType::input_qubit, GateType::input_param, GateType::cx,
@@ -61,11 +71,11 @@ int main(int argc, char **argv) {
   if(serial_search) {
     graph->create_xfers(eqset_fn, 1, context_array, xfers_array);
     std::cout << "number of xfers: " << xfers_array[0].size() << std::endl;
-    auto new_graph = graph->optimize(xfers_array[0], graph->gate_count() * 1.05, input_fn, "", true);
+    auto new_graph = graph->optimize(xfers_array[0], graph->gate_count() * 1.05, input_fn, "", true, nullptr, timeout);
   } else {
     graph->create_xfers(eqset_fn, parlay::num_workers(), context_array, xfers_array);
     std::cout << "number of xfers: " << xfers_array[0].size() << std::endl;
-    auto new_graph = graph->par_optimize(xfers_array, context_array, graph->gate_count() * 1.05, input_fn, "", true);
+    auto new_graph = graph->par_optimize(xfers_array, context_array, graph->gate_count() * 1.05, input_fn, "", true, breadth_search, nullptr, timeout);
   }
   // new_graph->to_qasm(output_fn, false, false);
   return 0;

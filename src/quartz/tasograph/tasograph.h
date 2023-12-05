@@ -266,6 +266,7 @@ class Graph {
 	      const std::string &circuit_name,
 	      const std::string &log_file_name,
 	      bool print_message,
+	      bool breadth_search = false,
 	      std::function<float(Graph *)> cost_function = nullptr,
 	      int timeout = 3600 /*1 hour*/);
 
