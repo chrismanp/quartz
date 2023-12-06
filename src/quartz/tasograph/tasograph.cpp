@@ -2147,8 +2147,14 @@ Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xfers_array,
   }
 
   int QUARTZ_BEAMSIZE=10;
+  int QUARTZ_MATCH=10;
   if (const char* env_p = std::getenv("QUARTZ_BEAMSIZE"))
     QUARTZ_BEAMSIZE=atoi(env_p);
+  if (const char* env_p = std::getenv("QUARTZ_MATCH"))
+    QUARTZ_MATCH=atoi(env_p);
+
+  std::cout << "Beamsize: " << QUARTZ_BEAMSIZE << "\n";
+  std::cout << "Number of matches to applied: " << QUARTZ_MATCH << "\n";
 
   int kMaxNumCandidates = QUARTZ_BEAMSIZE;
   int kShrinkToNumCandidates = QUARTZ_BEAMSIZE;
@@ -2199,7 +2205,7 @@ Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xfers_array,
       bool fix_point = false;
       auto g = std::get<0>(graph_tup);
       int counter = 0;
-      while(!fix_point && counter < 10) {
+      while(!fix_point && counter < QUARTZ_MATCH) {
         std::vector<Op> all_nodes;
         g->topology_order_ops(all_nodes);
         for (auto const &node : all_nodes) {
