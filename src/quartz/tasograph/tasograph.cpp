@@ -1963,7 +1963,7 @@ std::shared_ptr<Graph> Graph::optimize_legacy(
   //   for (it = bestGraph->inEdges.begin(); it !=
   //   bestGraph->inEdges.end();
   //   ++it) {
-  // 	std::cout << gate_type_name(it->first.ptr->tp) << std::endl;
+  //    std::cout << gate_type_name(it->first.ptr->tp) << std::endl;
   //   }
   bestGraph->constant_and_rotation_elimination();
   return bestGraph;
@@ -2041,7 +2041,7 @@ Graph::optimize(Context *ctx, const std::string &equiv_file_name,
   preprocessed_graph->create_xfers(equiv_file_name, 2, context_array, xfers_array);
 
   return preprocessed_graph->par_optimize(xfers_array, context_array, cost_upper_bound, circuit_name, "",
-					  print_message, false, cost_function, timeout);
+                                          print_message, false, cost_function, timeout);
 #endif
 
 }
@@ -2072,9 +2072,9 @@ void Graph::create_xfers(const std::string& eqset_fn,
 
     // Read the file contents into a string
     std::string file_contents(
-			      (std::istreambuf_iterator<char>(file_stream)),
-			      (std::istreambuf_iterator<char>())
-			      );
+                              (std::istreambuf_iterator<char>(file_stream)),
+                              (std::istreambuf_iterator<char>())
+                              );
 
     // Close the file
     file_stream.close();
@@ -2086,7 +2086,7 @@ void Graph::create_xfers(const std::string& eqset_fn,
 
 
   auto gate_set = {GateType::h, GateType::x, GateType::rz, GateType::add,
-		   GateType::cx, GateType::input_qubit, GateType::input_param};
+                   GateType::cx, GateType::input_qubit, GateType::input_param};
 
   parlay::parallel_for(0, P, [&](size_t i) {
 
@@ -2096,7 +2096,7 @@ void Graph::create_xfers(const std::string& eqset_fn,
     EquivalenceSet* eqs = new EquivalenceSet();
     if (!eqs->load_json(ctxt, iss)) {
       std::cout << "Failed to load equivalence file \"" << "whe"
-		<< "\"." << std::endl;
+                << "\"." << std::endl;
       assert(false);
     }
 
@@ -2137,7 +2137,7 @@ std::shared_ptr<Graph> graph_transfer (std::shared_ptr<Graph> graph, Context * c
 
 std::shared_ptr<Graph>
 Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xfers_array,
-		std::vector<Context*>& context_array,
+                std::vector<Context*>& context_array,
                 double cost_upper_bound,
                 const std::string &circuit_name,
                 const std::string &log_file_name, bool print_message, bool breadth_search,
@@ -2208,6 +2208,7 @@ Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xfers_array,
       while(!fix_point && counter < QUARTZ_MATCH) {
         std::vector<Op> all_nodes;
         g->topology_order_ops(all_nodes);
+        fix_point = true;
         for (auto const &node : all_nodes) {
           auto new_graph =
             g->apply_xfer(xfer, node, context_array[wid]->has_parameterized_gate());
@@ -2219,7 +2220,6 @@ Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xfers_array,
             break;
           }
         }
-        fix_point = true;
       }
       if (any_changes) {
         auto new_graph = graph_transfer (g, context_array[0]);
@@ -2294,7 +2294,7 @@ Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xfers_array,
       if (ca != cb) {
         return ca < cb;
       } else {
-	      return ha < hb;
+              return ha < hb;
       }
     };
     candidates = parlay::remove_duplicates_ordered (res, less);
@@ -2324,9 +2324,9 @@ Graph::par_optimize(std::vector<std::vector<GraphXfer *>> &xfers_array,
               "[%s] Best cost: %f\t num candidates in this round: %d num candidates in total: %ld \tafter %.3f seconds.\n",
               circuit_name.c_str(), best_cost, candidates.size(), number_nodes_explored,
               (double)std::chrono::duration_cast<std::chrono::milliseconds>(
-									    end - start)
-	      .count() /
-	      1000.0);
+                                                                            end - start)
+              .count() /
+              1000.0);
       fflush(fout);
     }
   }
@@ -2437,7 +2437,7 @@ Graph::optimize(const std::vector<GraphXfer *> &xfers, double cost_upper_bound,
         if (hashmap.find(new_hash) == hashmap.end()) {
           hashmap.insert(new_hash);
           candidates.push(new_graph);
-	  number_nodes_explored++;
+          number_nodes_explored++;
           if (candidates.size() > kMaxNumCandidates) {
             shrink_candidates();
           }
@@ -2453,7 +2453,7 @@ Graph::optimize(const std::vector<GraphXfer *> &xfers, double cost_upper_bound,
     auto end = std::chrono::steady_clock::now();
     if (print_message) {
       fprintf(fout,
-	      "[%s] Best cost: %f\tcandidate number: %d total number of candidates generated: %ld \tafter %.3f seconds.\n",
+              "[%s] Best cost: %f\tcandidate number: %d total number of candidates generated: %ld \tafter %.3f seconds.\n",
               circuit_name.c_str(), best_cost, candidates.size(), number_nodes_explored,
               (double)std::chrono::duration_cast<std::chrono::milliseconds>(
                   end - start)
